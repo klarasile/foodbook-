@@ -1,0 +1,29 @@
+(function(){
+'use strict';
+const root=document.getElementById('cloudPanel');
+const cfg=window.FOODBOK_SYNC_CONFIG||{};
+const usable=/^https:\/\/[^/]+\.supabase\.co\/?$/.test(cfg.url||'') && cfg.key && !cfg.key.includes('TU_WKLEJ');
+const sb=usable && window.supabase ? window.supabase.createClient(cfg.url,cfg.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}}):null;
+let currentUser=null,loading=false;
+const isFood=document.body.querySelector('.logo')!==null;
+function say(msg,err=false){const el=document.getElementById('cloudMsg');if(el){el.textContent=msg;el.style.color=err?'#9b2f57':'#795778'}}
+function view(){
+ if(!root)return;
+ if(!sb){root.innerHTML='<strong>☁️ Synchronizacja wymaga konfiguracji</strong><p>Dodaj adres projektu i klucz publiczny w pliku sync-config.js.</p>';return}
+ if(!currentUser){root.innerHTML=`<strong>☁️ Połącz konto rodzinne</strong><p>Zaloguj się tym samym e-mailem i hasłem w Foodbok i Redukcji. Pierwszy raz wybierz „Utwórz konto”, a wiadomość potwierdzającą otwórz w Safari. Nigdy nie wpisuj tutaj hasła bazy danych Supabase.</p><div style="display:grid;gap:8px"><input id="cloudEmail" type="email" autocomplete="username" placeholder="Adres e-mail" style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #dec2d1"><input id="cloudPassword" type="password" autocomplete="current-password" placeholder="Hasło do konta rodzinnego (min. 8 znaków)" style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #dec2d1"><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="secondary" id="cloudLogin" type="button">Zaloguj</button><button class="secondary" id="cloudSignup" type="button">Utwórz konto</button></div></div><p class="hint" id="cloudMsg" aria-live="polite"></p>`;
+ const credentials=()=>({email:document.getElementById('cloudEmail').value.trim(),password:document.getElementById('cloudPassword').value});
+ document.getElementById('cloudLogin').onclick=async()=>{const {email,password}=credentials();if(!email||!password){say('Podaj adres e-mail i hasło.',true);return}say('Logowanie…');const {error}=await sb.auth.signInWithPassword({email,password});say(error?'Nie udało się zalogować: '+error.message:'✓ Zalogowano.',!!error)};
+ document.getElementById('cloudSignup').onclick=async()=>{const {email,password}=credentials();if(!email||password.length<8){say('Wpisz e-mail i hasło z co najmniej 8 znaków.',true);return}say('Tworzę konto…');const {data,error}=await sb.auth.signUp({email,password,options:{emailRedirectTo:location.origin+location.pathname}});if(error){say('Błąd: '+error.message,true);return}say(data.session?'✓ Konto utworzone i zalogowane.':'Sprawdź skrzynkę pocztową i potwierdź adres e-mail. Następnie zaloguj się tutaj tym samym hasłem.')};
+ }else{root.innerHTML=`<strong>☁️ Konto rodzinne połączone</strong><p>Kalorie Klary i mamy mają osobne wpisy. Zaloguj się tym samym e-mailem w obu aplikacjach.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="secondary" id="cloudNow" type="button">${isFood?'Zapisz teraz':'Odśwież kalorie'}</button><button class="secondary" id="cloudOut" type="button">Wyloguj</button></div><p class="hint" id="cloudMsg" aria-live="polite">${isFood?'Zmiany posiłków zapisują się automatycznie.':'Kalorie są pobierane po otwarciu aplikacji.'}</p>`;
+ document.getElementById('cloudNow').onclick=()=>isFood?upload():download();document.getElementById('cloudOut').onclick=()=>sb.auth.signOut();
+ }
+}
+function records(){const all=[];for(const [key,p] of Object.entries(plans)){const m=/^(\d{4}-\d{2}-\d{2})_([01])$/.exec(key);if(!m||!p||!p.select||!p.eaten)continue;const who=+m[2],vals=[0,0,0,0];let meals=0;for(const slot of slots){if(!p.eaten[slot])continue;const rec=byId(p.select[slot]);if(!rec||!rec.macro?.[who])continue;rec.macro[who].forEach((x,i)=>{if(i<4)vals[i]+=Number(x)||0});meals++}all.push({user_id:currentUser.id,day:m[1],person:who?'mama':'klara',kcal:Math.round(vals[0]*10)/10,protein:Math.round(vals[1]*10)/10,carbs:Math.round(vals[2]*10)/10,fat:Math.round(vals[3]*10)/10,meals})}return all}
+async function upload(){if(!sb||!currentUser||loading)return;const rows=records();if(!rows.length){say('Nie ma jeszcze zapisanych dni. Zaznacz posiłek.');return}loading=true;say('Zapisuję kalorie…');try{const {error}=await sb.from('foodbok_daily').upsert(rows,{onConflict:'user_id,person,day'});if(error)throw error;say('✓ Zapisano '+rows.length+' bilansów w chmurze.')}catch(e){say('Nie udało się zapisać: '+e.message,true)}finally{loading=false}}
+async function download(){if(!sb||!currentUser||loading)return;loading=true;say('Pobieram kalorie…');try{const {data,error}=await sb.from('foodbok_daily').select('day,person,kcal,protein,carbs,fat,meals').gte('day','2026-11-09').lte('day','2027-01-31');if(error)throw error;sync.dates={};for(const row of data){if(!sync.dates[row.day])sync.dates[row.day]={};sync.dates[row.day][row.person]={kcal:row.kcal,bialko:row.protein,wegle:row.carbs,tluszcze:row.fat,meals:row.meals}}sync.at=new Date().toISOString();saveSync();render();say('✓ Pobrano '+data.length+' bilansów.');}catch(e){say('Nie udało się pobrać: '+e.message,true)}finally{loading=false}}
+let timer;window.foodbokCloudChanged=()=>{clearTimeout(timer);timer=setTimeout(upload,650)};
+if(!sb){view();return}
+sb.auth.onAuthStateChange((event,session)=>{currentUser=session?.user||null;view();if(currentUser){setTimeout(()=>{if(isFood)upload();else download()},50)}});
+sb.auth.getSession().then(({data})=>{currentUser=data.session?.user||null;view();if(currentUser){if(isFood)upload();else download()}}).catch(e=>say(e.message,true));
+if(!isFood){document.addEventListener('visibilitychange',()=>{if(!document.hidden&&currentUser)download()});window.addEventListener('focus',()=>{if(currentUser)download()})}
+})();
